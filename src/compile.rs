@@ -7,7 +7,7 @@ pub enum Loc {
     Reg(usize),
     RegDeref(usize),
     AddrStack(usize), //stack offset
-    Addr(usize) //absolute
+    Label(String) //absolute
 }
 
 #[derive(Debug, Clone)]
@@ -26,9 +26,14 @@ pub enum Instr {
 }
 
 #[derive(Debug, Clone)]
+pub struct Blob {
+    pub instructions: Vec<Instr>,
+    pub labels: HashMap<String, usize>
+}
+
+#[derive(Debug, Clone)]
 pub struct Compiler {
-    instructions: Vec<Instr>,
-    labels: HashMap<String, usize>, // mem offsets
+    blob: Blob,
     variables: HashMap<String, usize>,
     unlinked: Vec<(String, usize)>,
     var_offset: usize,
@@ -38,8 +43,10 @@ pub struct Compiler {
 impl Compiler {
     pub fn new() -> Self {
         Self {
-            instructions: Vec::new(),
-            labels: HashMap::new(),
+            blob: Blob {
+                instructions: Vec::new(),
+                labels: HashMap::new()
+            },
             variables: HashMap::new(),
             unlinked: Vec::new(),
             var_offset: 0,
@@ -47,17 +54,14 @@ impl Compiler {
         }
     }
 
-    pub fn compile_program(&mut self, program: &Program) {
+    pub fn compile_program(mut self, program: &Program) -> Blob {
         for fun in program.functions.iter() {
-            self.labels.insert(fun.name.clone(), self.instructions.len());
+            self.blob.labels.insert(fun.name.clone(), self.blob.instructions.len());
             for stmt in fun.body.iter() {
                 self.compile_stmt(stmt);
             }
         }
-    }
-
-    fn link_program() {
-        unimplemented!();
+        self.blob
     }
     
     fn compile_stmt(&mut self, stmt: &Stmt) {
@@ -66,26 +70,28 @@ impl Compiler {
             Stmt::Assignment(name, expr) => {
                 self.compile_expr(expr);
                 let var_addr = self.get_var_offset(name);
-                self.instructions.push(Instr::Mov(Loc::Reg(0), Loc::AddrStack(var_addr)));
+                self.blob.instructions.push(Instr::Mov(Loc::Reg(0), Loc::AddrStack(var_addr)));
             },
             Stmt::Return(expr) => {
                 if let Some(expr) = expr {
                     self.compile_expr(expr);
                 }
-                self.instructions.push(Instr::Ret);
+                // TODO: explicit return address set?
+                self.blob.instructions.push(Instr::Ret);
             },
             Stmt::Conditional(cond, yes, no) => { //TODO: yes and no should be vecs of stmts, not expression
+                let temp_label = format!("_{}", self.temp_label_num);
+                self.temp_label_num += 1;
+
                 self.compile_expr(cond); //eval condition
-                self.instructions.push(Instr::Cmp(Loc::Imm(0), Loc::Reg(0))); //set zero flag based on r0
-                self.instructions.push(Instr::Jez(Loc::Addr(0))); //jump to false branch if zero flag set
+                self.blob.instructions.push(Instr::Cmp(Loc::Imm(0), Loc::Reg(0))); //set zero flag based on r0
+                self.blob.instructions.push(Instr::Jez(Loc::Label(temp_label.clone()))); //jump to false branch if zero flag set
 
                 //true branch
                 self.compile_expr(yes);
                 
                 //false branch
-                let temp_label = format!("_{}", self.temp_label_num);
-                self.temp_label_num += 1;
-                self.unlinked.push((temp_label, self.instructions.len() - 1));
+                self.blob.labels.insert(temp_label, self.blob.instructions.len() - 1);
                 if let Some(no) = no {
                     self.compile_expr(no);
                 }
@@ -97,28 +103,28 @@ impl Compiler {
         match expr {
             Expr::Constant(v) => {
                 //TODO: Remove this fucking truncation
-                self.instructions.push(Instr::Mov(Loc::Imm(*v as i64), Loc::Reg(0)))
+                self.blob.instructions.push(Instr::Mov(Loc::Imm(*v as i64), Loc::Reg(0)))
             },
             Expr::Binary(lhs, op, rhs) => {
                 self.compile_expr(lhs);
-                self.instructions.push(Instr::Mov(Loc::Reg(0), Loc::Reg(1)));
+                self.blob.instructions.push(Instr::Mov(Loc::Reg(0), Loc::Reg(1)));
                 self.compile_expr(rhs);
-                self.instructions.push(Instr::BinOp(Loc::Reg(0), op.clone(), Loc::Reg(1)));
+                self.blob.instructions.push(Instr::BinOp(Loc::Reg(0), op.clone(), Loc::Reg(1)));
             },
             Expr::Unary(op, rhs) => {
                 unimplemented!();
             },
             Expr::Call(name, params) => {
-                /*let num_params = params.len();
-                for param in params.iter().rev() {
-                    self.compile_expr(params);
-                    self.instructions.push();
-                }*/
-                unimplemented!();
+                let num_params = params.len();
+                for (i, param) in params.iter().enumerate() {
+                    self.compile_expr(param);
+                    self.blob.instructions.push(Instr::Mov(Loc::Reg(0), Loc::Reg(i+2)));
+                }
+                self.blob.instructions.push(Instr::Call(Loc::Label(name.clone())));
             },
             Expr::Symbol(name) => {
                 let var_addr = self.get_var_offset(name);
-                self.instructions.push(Instr::Mov(Loc::AddrStack(var_addr), Loc::Reg(0)))
+                self.blob.instructions.push(Instr::Mov(Loc::AddrStack(var_addr), Loc::Reg(0)));
             },
         }
     }
